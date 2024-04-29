@@ -179,6 +179,7 @@ class TrainerModule:
         self.create_functions()
         # Initialize model
         self.init_model(exmp_imgs)
+        self.eval_profile = True
 
     def create_functions(self):
         # Function to calculate the classification loss and accuracy for a model
@@ -207,8 +208,17 @@ class TrainerModule:
         # Eval function
         def eval_step(state, batch):
             # Return the accuracy for a single batch
+            
+            start = time.perf_counter()
+            #if self.eval_profile:
+            #    print("Running profile")
+            #    with jax.profiler.trace('/home/hahavanu/profile_dump/'):
+            #        _, (acc, _) = calculate_loss(state.params, state.batch_stats, batch, train=False)
+            #    self.eval_profile = False
+            #else:
             _, (acc, _) = calculate_loss(state.params, state.batch_stats, batch, train=False)
-            return acc
+            end = time.perf_counter()
+            return acc, end-start
         # jit for efficiency
         self.train_step = jax.jit(train_step)
         self.eval_step = jax.jit(eval_step)
@@ -283,11 +293,14 @@ class TrainerModule:
     def eval_model(self, data_loader):
         # Test model on all images of a data loader and return avg loss
         correct_class, count = 0, 0
+        metrics = defaultdict(list)
         for batch in data_loader:
-            acc = self.eval_step(self.state, batch)
+            acc, elapsed_time = self.eval_step(self.state, batch)
             correct_class += acc * batch[0].shape[0]
             count += batch[0].shape[0]
+            metrics['elapsed_time'].append(elapsed_time)
         eval_acc = (correct_class / count).item()
+        print(f"Eval elapsed_time: {np.stack(jax.device_get(metrics['elapsed_time'])).sum()}")
         return eval_acc
 
     def save_model(self, step=0):
@@ -318,15 +331,14 @@ class TrainerModule:
 def train_classifier(*args, num_epochs=200, **kwargs):
     # Create a trainer module with specified hyperparameters
     trainer = TrainerModule(*args, **kwargs)
-    trainer.train_model(train_loader, val_loader, num_epochs=num_epochs)
+    #with jax.profiler.trace('/home/hahavanu/profile_dump/'):
+    #    trainer.train_model(train_loader, val_loader, num_epochs=num_epochs)
     
     trainer.load_model(pretrained=True)
     # Test trained model
     val_acc = trainer.eval_model(val_loader)
-    start = time.perf_counter()
-    test_acc = trainer.eval_model(test_loader)
-    end = time.perf_counter()
-    print(f"Test batches:{len(test_loader)} Time: {end - start}")
+    with jax.profiler.trace('/home/hahavanu/profile_dump/'):
+        test_acc = trainer.eval_model([next(iter(test_loader))])
     return trainer, {'val': val_acc, 'test': test_acc}
 
 googlenet_kernel_init = nn.initializers.kaiming_normal()
@@ -543,24 +555,24 @@ class DenseNet(nn.Module):
         return x
 
 densenet_trainer, densenet_results = train_classifier(model_name="DenseNet",
-                                                      model_class=DenseNet,
-                                                      model_hparams={"num_classes": 10,
-                                                                     "num_layers": [6, 6, 6, 6],
-                                                                     "bn_size": 2,
-                                                                     "growth_rate": 16,
-                                                                     "act_fn": nn.relu},
-                                                      optimizer_name="adamw",
-                                                      optimizer_hparams={"lr": 1e-3,
-                                                                         "weight_decay": 1e-4},
-                                                      exmp_imgs=jax.device_put(
-                                                          next(iter(train_loader))[0]),
-                                                      num_epochs=10)
+                                                     model_class=DenseNet,
+                                                     model_hparams={"num_classes": 10,
+                                                                    "num_layers": [6, 6, 6, 6],
+                                                                    "bn_size": 2,
+                                                                    "growth_rate": 16,
+                                                                    "act_fn": nn.relu},
+                                                     optimizer_name="adamw",
+                                                     optimizer_hparams={"lr": 1e-3,
+                                                                        "weight_decay": 1e-4},
+                                                     exmp_imgs=jax.device_put(
+                                                         next(iter(train_loader))[0]),
+                                                     num_epochs=10)
 print("DenseNet Results", densenet_results)
 
 resnet_trainer, resnet_results = train_classifier(model_name="ResNet",
-                                                  model_class=ResNet,
-                                                  model_hparams={"num_classes": 10,
-                                                                 "c_hidden": (16, 32, 64),
+                                                 model_class=ResNet,
+                                                 model_hparams={"num_classes": 10,
+                                                                "c_hidden": (16, 32, 64),
                                                                  "num_blocks": (3, 3, 3),
                                                                  "act_fn": nn.relu,
                                                                  "block_class": ResNetBlock},
